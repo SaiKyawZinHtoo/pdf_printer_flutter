@@ -18,6 +18,7 @@ class _CreateScreenState extends State<CreateScreen> {
   bool _connected = false;
   List<BluetoothInfo> _devices = [];
   String? _connectedDeviceName;
+  bool _isBluetoothOn = false;
 
   final TextEditingController numberController = TextEditingController();
   final TextEditingController nameController = TextEditingController();
@@ -28,8 +29,25 @@ class _CreateScreenState extends State<CreateScreen> {
   @override
   void initState() {
     super.initState();
+    checkBluetoothStatus();
     getBondedDevices();
     _checkPrinterConnection();
+  }
+
+  Future<void> checkBluetoothStatus() async {
+    try {
+      final bool result = await PrintBluetoothThermal.bluetoothEnabled;
+      setState(() {
+        _isBluetoothOn = result;
+      });
+      if (!result) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Please turn on Bluetooth')),
+        );
+      }
+    } catch (e) {
+      print("Error checking Bluetooth status: $e");
+    }
   }
 
   Future<void> _checkPrinterConnection() async {
@@ -80,6 +98,12 @@ class _CreateScreenState extends State<CreateScreen> {
 
   Future<void> getBondedDevices() async {
     try {
+      if (!_isBluetoothOn) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Bluetooth is not enabled')),
+        );
+        return;
+      }
       _devices = await PrintBluetoothThermal.pairedBluetooths;
       setState(() {});
     } catch (e) {
