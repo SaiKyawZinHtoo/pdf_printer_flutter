@@ -2,8 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>This app uses Bluetooth to connect to and print receipts from external printers.</string>
+<key>NSBluetoothAlwaysUsageDescription</key>
+<string>Need Bluetooth permission for printing</string>
+<key>NSBluetoothPeripheralUsageDescription</key>
+<string>Need Bluetooth permission for printing</string>
+<key>NSBluetoothAlwaysUsageDescription</key>
+<string>Bluetooth access to connect 58mm or 80mm thermal printers</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
