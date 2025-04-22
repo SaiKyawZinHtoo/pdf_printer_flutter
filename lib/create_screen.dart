@@ -254,23 +254,25 @@ class _CreateScreenState extends State<CreateScreen> {
       );
 
       final pdfBytes = await pdf.save();
-      final printer = await Printing.pickPrinter(context: context);
 
-      if (printer == null) {
+      // Save PDF to temporary file
+      final output = await Printing.layoutPdf(
+        onLayout: (PdfPageFormat format) async => await pdf.save(),
+      );
+
+      // Print the PDF
+      final bool result =
+          await PrintBluetoothThermal.writeBytes(output as List<int>);
+
+      if (result) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('No printer selected')),
+          SnackBar(content: Text('Printing completed')),
         );
-        return;
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to print')),
+        );
       }
-
-      await Printing.directPrintPdf(
-        printer: printer,
-        onLayout: (_) => pdfBytes,
-      );
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Printing completed')),
-      );
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Error printing: $e')),
