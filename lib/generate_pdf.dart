@@ -1,7 +1,7 @@
 import 'package:flutter/services.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
-import 'package:printing/printing.dart'; // Import the printing package
+import 'package:printing/printing.dart';
 
 Future<void> generatePdf(
   String printerSize,
@@ -9,13 +9,11 @@ Future<void> generatePdf(
 ) async {
   final pdf = pw.Document();
 
-  // Load the Myanmar font
   final myanmarFont = await rootBundle.load(
     "assets/Pyidaungsu-2.5.3_Regular.ttf",
   );
   final ttf = pw.Font.ttf(myanmarFont);
 
-  // Change page size based on selected printer type
   PdfPageFormat format;
 
   switch (printerSize) {
@@ -51,9 +49,6 @@ Future<void> generatePdf(
     ),
   );
 
-  // Save the PDF document
   final file = await pdf.save();
-
-  // Share the PDF document
   await Printing.sharePdf(bytes: file, filename: 'invoice.pdf');
 }

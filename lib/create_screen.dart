@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
+import 'package:permission_handler/permission_handler.dart';
 import 'package:printing/printing.dart';
 import 'package:print_bluetooth_thermal/print_bluetooth_thermal.dart';
 import 'generate_pdf.dart';
@@ -98,16 +99,85 @@ class _CreateScreenState extends State<CreateScreen> {
 
   Future<void> getBondedDevices() async {
     try {
-      if (!_isBluetoothOn) {
+      // Request runtime permissions first
+      if (!await _requestPermissions()) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text('Please grant Bluetooth permissions in settings')),
+        );
+        return;
+      }
+      // First check Bluetooth status
+      final bool isEnabled = await PrintBluetoothThermal.bluetoothEnabled;
+      print("Bluetooth Status: $isEnabled"); // Debug log
+
+      if (!isEnabled) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Bluetooth is not enabled')),
         );
         return;
       }
-      _devices = await PrintBluetoothThermal.pairedBluetooths;
-      setState(() {});
+
+      // Get paired devices
+      final List<BluetoothInfo> devices =
+          await PrintBluetoothThermal.pairedBluetooths;
+      print("Found ${devices.length} paired devices"); // Debug log
+
+      // Print each device for debugging
+      devices.forEach((device) {
+        print("Device: ${device.name} - ${device.macAdress}");
+      });
+
+      setState(() {
+        _devices = devices;
+      });
+
+      if (devices.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text(
+                  'No paired devices found. Please pair your printer in system settings')),
+        );
+      }
     } catch (e) {
       print("Error getting bonded devices: $e");
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error finding paired devices: $e')),
+      );
+    }
+  }
+
+  Future<bool> _requestPermissions() async {
+    try {
+      // Request Bluetooth permissions
+      final List<String> permissions = [
+        'android.permission.BLUETOOTH',
+        'android.permission.BLUETOOTH_ADMIN',
+        'android.permission.BLUETOOTH_CONNECT',
+        'android.permission.BLUETOOTH_SCAN',
+        'android.permission.ACCESS_FINE_LOCATION',
+      ];
+
+      // Use permission_handler package to request permissions
+      Map<Permission, PermissionStatus> statuses = await [
+        Permission.bluetooth,
+        Permission.bluetoothConnect,
+        Permission.bluetoothScan,
+        Permission.location,
+      ].request();
+
+      // Check if all permissions are granted
+      bool allGranted = true;
+      statuses.forEach((permission, status) {
+        if (!status.isGranted) {
+          allGranted = false;
+        }
+      });
+
+      return allGranted;
+    } catch (e) {
+      print("Error requesting permissions: $e");
+      return false;
     }
   }
 
@@ -143,10 +213,8 @@ class _CreateScreenState extends State<CreateScreen> {
 
     try {
       final pdf = pw.Document();
-
-      final myanmarFont = await rootBundle.load(
-        "assets/Pyidaungsu-2.5.3_Regular.ttf",
-      );
+      final myanmarFont =
+          await rootBundle.load("assets/Pyidaungsu-2.5.3_Regular.ttf");
       final ttf = pw.Font.ttf(myanmarFont);
 
       pdf.addPage(
@@ -212,12 +280,9 @@ class _CreateScreenState extends State<CreateScreen> {
 
   Future<void> saveAndSharePdf() async {
     final pdf = pw.Document();
-
-    final myanmarFont = await rootBundle.load(
-      "assets/Pyidaungsu-2.5.3_Regular.ttf",
-    );
+    final myanmarFont =
+        await rootBundle.load("assets/Pyidaungsu-2.5.3_Regular.ttf");
     final ttf = pw.Font.ttf(myanmarFont);
-
     PdfPageFormat format = PdfPageFormat.a4;
 
     pdf.addPage(
@@ -322,21 +387,91 @@ class _CreateScreenState extends State<CreateScreen> {
                   )
                 : Column(
                     children: [
-                      Text('Paired Devices:'),
-                      Container(
-                        height: 100,
-                        child: ListView.builder(
-                          itemCount: _devices.length,
-                          itemBuilder: (context, index) {
-                            return ListTile(
-                              leading: Icon(Icons.print),
-                              title: Text(_devices[index].name ?? 'Unknown'),
-                              subtitle: Text(_devices[index].macAdress),
-                              onTap: () => connectToDevice(_devices[index]),
-                            );
-                          },
-                        ),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            'Paired Devices',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          ElevatedButton.icon(
+                            onPressed: getBondedDevices,
+                            icon: Icon(Icons.refresh),
+                            label: Text('Refresh'),
+                          ),
+                        ],
                       ),
+                      SizedBox(height: 10),
+                      _devices.isEmpty
+                          ? Container(
+                              height: 100,
+                              alignment: Alignment.center,
+                              decoration: BoxDecoration(
+                                border: Border.all(color: Colors.grey[300]!),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(
+                                    Icons.bluetooth_disabled,
+                                    size: 32,
+                                    color: Colors.grey,
+                                  ),
+                                  SizedBox(height: 8),
+                                  Text(
+                                    'No paired devices found',
+                                    style: TextStyle(color: Colors.grey[600]),
+                                  ),
+                                ],
+                              ),
+                            )
+                          : Container(
+                              height: 150,
+                              decoration: BoxDecoration(
+                                border: Border.all(color: Colors.grey[300]!),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: ListView.builder(
+                                itemCount: _devices.length,
+                                itemBuilder: (context, index) {
+                                  final device = _devices[index];
+                                  return Card(
+                                    margin: EdgeInsets.symmetric(
+                                        horizontal: 8, vertical: 4),
+                                    child: ListTile(
+                                      leading: Container(
+                                        padding: EdgeInsets.all(8),
+                                        decoration: BoxDecoration(
+                                          color: Colors.blue.withOpacity(0.1),
+                                          shape: BoxShape.circle,
+                                        ),
+                                        child: Icon(Icons.print,
+                                            color: Colors.blue),
+                                      ),
+                                      title: Text(
+                                        device.name ?? 'Unknown Device',
+                                        style: TextStyle(
+                                            fontWeight: FontWeight.bold),
+                                      ),
+                                      subtitle: Text(device.macAdress),
+                                      trailing: ElevatedButton(
+                                        onPressed: () =>
+                                            connectToDevice(device),
+                                        child: Text('Connect'),
+                                        style: ElevatedButton.styleFrom(
+                                          backgroundColor: Colors.blue,
+                                          foregroundColor: Colors.white,
+                                        ),
+                                      ),
+                                    ),
+                                  );
+                                },
+                              ),
+                            ),
                     ],
                   ),
             Expanded(
