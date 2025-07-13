@@ -1,25 +1,31 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:core';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_thermal_printer/utils/printer.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
-import 'package:permission_handler/permission_handler.dart';
-import 'package:printing/printing.dart';
-import 'package:print_bluetooth_thermal/print_bluetooth_thermal.dart';
-import 'generate_pdf.dart';
+import 'package:printing/printing.dart' hide Printer;
+import 'package:flutter_thermal_printer/flutter_thermal_printer.dart';
 
 class CreateScreen extends StatefulWidget {
+  const CreateScreen({super.key});
+
   @override
-  _CreateScreenState createState() => _CreateScreenState();
+  State<CreateScreen> createState() => _CreateScreenState();
 }
 
 class _CreateScreenState extends State<CreateScreen> {
+  final _flutterThermalPrinterPlugin = FlutterThermalPrinter.instance;
+  List<Printer> printers = [];
+  StreamSubscription<List<Printer>>? _devicesStreamSubscription;
+  Printer? _connectedPrinter;
   List<Map<String, dynamic>> items = [];
   bool _connected = false;
-  List<BluetoothInfo> _devices = [];
   String? _connectedDeviceName;
-  bool _isBluetoothOn = false;
+  String? _connectedDeviceAddress;
 
   final TextEditingController numberController = TextEditingController();
   final TextEditingController nameController = TextEditingController();
@@ -30,54 +36,151 @@ class _CreateScreenState extends State<CreateScreen> {
   @override
   void initState() {
     super.initState();
-    checkBluetoothStatus();
-    getBondedDevices();
-    _checkPrinterConnection();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      startScan();
+    });
   }
 
-  Future<void> checkBluetoothStatus() async {
-    try {
-      final bool result = await PrintBluetoothThermal.bluetoothEnabled;
+  void startScan() async {
+    _devicesStreamSubscription?.cancel();
+    await _flutterThermalPrinterPlugin.getPrinters(connectionTypes: [
+      ConnectionType.USB,
+      ConnectionType.BLE,
+    ]);
+    _devicesStreamSubscription = _flutterThermalPrinterPlugin.devicesStream
+        .listen((List<Printer> event) {
       setState(() {
-        _isBluetoothOn = result;
+        printers = event;
+        printers.removeWhere(
+            (element) => element.name == null || element.name == '');
       });
-      if (!result) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Please turn on Bluetooth')),
-        );
-      }
-    } catch (e) {
-      print("Error checking Bluetooth status: $e");
-    }
+    });
   }
 
-  Future<void> _checkPrinterConnection() async {
+  void stopScan() {
+    _flutterThermalPrinterPlugin.stopScan();
+  }
+
+  Future<void> connectToPrinter(Printer printer) async {
     try {
-      final bool connectionStatus =
-          await PrintBluetoothThermal.connectionStatus;
+      await _flutterThermalPrinterPlugin.connect(printer);
       setState(() {
-        _connected = connectionStatus;
+        _connectedPrinter = printer;
+        _connected = true;
+        _connectedDeviceName = printer.name;
+        _connectedDeviceAddress = printer.address;
       });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Connected to ${printer.name}')),
+      );
     } catch (e) {
-      print("Error checking printer connection: $e");
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to connect: $e')),
+      );
     }
   }
 
   Future<void> disconnectPrinter() async {
+    if (_connectedPrinter == null) return;
     try {
-      final bool result = await PrintBluetoothThermal.disconnect;
+      await _flutterThermalPrinterPlugin.disconnect(_connectedPrinter!);
       setState(() {
+        _connectedPrinter = null;
         _connected = false;
         _connectedDeviceName = null;
+        _connectedDeviceAddress = null;
       });
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-            content:
-                Text(result ? 'Printer disconnected' : 'Failed to disconnect')),
+        SnackBar(content: Text('Printer disconnected')),
       );
     } catch (e) {
-      print("Error disconnecting printer: $e");
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error disconnecting: $e')),
+      );
     }
+  }
+
+  Future<void> printTicket() async {
+    if (!_connected || _connectedPrinter == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Please connect to a printer first')),
+      );
+      return;
+    }
+    try {
+      print('[DEBUG] printTicket called');
+      // Only print very short text receipts (max 2 items)
+      if (items.length > 2) {
+        print('[DEBUG] Too many items for Bluetooth print: ${items.length}');
+        await showDialog(
+          context: context,
+          builder: (context) {
+            return AlertDialog(
+              title: const Text('Bluetooth Printing Limitation'),
+              content: const Text(
+                  'Bluetooth printing with this printer only supports very short receipts (1-2 items). For longer receipts, please print in batches or use USB/WiFi.'),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('OK'),
+                ),
+              ],
+            );
+          },
+        );
+        return;
+      }
+      String receiptText = '===== Item List =====\n';
+      receiptText += items
+          .map((item) =>
+              'No: ${item['number']} | Name: ${item['name']} | Price: ${item['price']} | Qty: ${item['quantity']} | Amt: ${item['amount']}')
+          .join('\n');
+      final bytes = utf8.encode(receiptText);
+      print('[DEBUG] Receipt text length: ${receiptText.length}');
+      print('[DEBUG] Receipt bytes length: ${bytes.length}');
+      if (bytes.length > 200) {
+        print(
+            '[ERROR] Receipt too long for Bluetooth print: ${bytes.length} bytes');
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text(
+                  'Receipt too long for Bluetooth print. Please print fewer items.')),
+        );
+        return;
+      }
+      print(
+          '[DEBUG] Sending printWidget to printer: ${_connectedPrinter?.name}');
+      try {
+        await _flutterThermalPrinterPlugin.printWidget(
+          context,
+          printer: _connectedPrinter!,
+          printOnBle: true,
+          widget: _buildReceiptWidget(receiptText),
+        );
+        print('[DEBUG] Printing completed');
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Printing completed')),
+        );
+      } catch (e) {
+        print('[ERROR] PrintWidget error: $e');
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error printing: $e')),
+        );
+      }
+    } catch (e) {
+      print('[ERROR] printTicket outer error: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error printing: $e')),
+      );
+    }
+  }
+
+  Widget _buildReceiptWidget(String receiptText) {
+    // Use a single Text widget for minimal Bluetooth data
+    return Text(
+      receiptText,
+      style: const TextStyle(fontSize: 14, fontFamily: 'monospace'),
+    );
   }
 
   void addItem() {
@@ -95,189 +198,6 @@ class _CreateScreenState extends State<CreateScreen> {
       quantityController.clear();
       amountController.clear();
     });
-  }
-
-  Future<void> getBondedDevices() async {
-    try {
-      // Request runtime permissions first
-      if (!await _requestPermissions()) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-              content: Text('Please grant Bluetooth permissions in settings')),
-        );
-        return;
-      }
-      // First check Bluetooth status
-      final bool isEnabled = await PrintBluetoothThermal.bluetoothEnabled;
-      print("Bluetooth Status: $isEnabled"); // Debug log
-
-      if (!isEnabled) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Bluetooth is not enabled')),
-        );
-        return;
-      }
-
-      // Get paired devices
-      final List<BluetoothInfo> devices =
-          await PrintBluetoothThermal.pairedBluetooths;
-      print("Found ${devices.length} paired devices"); // Debug log
-
-      // Print each device for debugging
-      devices.forEach((device) {
-        print("Device: ${device.name} - ${device.macAdress}");
-      });
-
-      setState(() {
-        _devices = devices;
-      });
-
-      if (devices.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-              content: Text(
-                  'No paired devices found. Please pair your printer in system settings')),
-        );
-      }
-    } catch (e) {
-      print("Error getting bonded devices: $e");
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error finding paired devices: $e')),
-      );
-    }
-  }
-
-  Future<bool> _requestPermissions() async {
-    try {
-      // Request Bluetooth permissions
-      final List<String> permissions = [
-        'android.permission.BLUETOOTH',
-        'android.permission.BLUETOOTH_ADMIN',
-        'android.permission.BLUETOOTH_CONNECT',
-        'android.permission.BLUETOOTH_SCAN',
-        'android.permission.ACCESS_FINE_LOCATION',
-      ];
-
-      // Use permission_handler package to request permissions
-      Map<Permission, PermissionStatus> statuses = await [
-        Permission.bluetooth,
-        Permission.bluetoothConnect,
-        Permission.bluetoothScan,
-        Permission.location,
-      ].request();
-
-      // Check if all permissions are granted
-      bool allGranted = true;
-      statuses.forEach((permission, status) {
-        if (!status.isGranted) {
-          allGranted = false;
-        }
-      });
-
-      return allGranted;
-    } catch (e) {
-      print("Error requesting permissions: $e");
-      return false;
-    }
-  }
-
-  Future<void> connectToDevice(BluetoothInfo device) async {
-    try {
-      String mac = "66:02:BD:06:18:7B"; // Example MAC address
-      final bool result =
-          await PrintBluetoothThermal.connect(macPrinterAddress: mac);
-      setState(() {
-        _connected = result;
-        _connectedDeviceName = result ? device.name : null;
-      });
-      if (result) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Connected to ${device.name}')),
-        );
-      }
-    } catch (e) {
-      print("Error connecting to device: $e");
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to connect: $e')),
-      );
-    }
-  }
-
-  Future<void> printTicket() async {
-    if (!_connected) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Please connect to a printer first')),
-      );
-      return;
-    }
-
-    try {
-      final pdf = pw.Document();
-      final myanmarFont =
-          await rootBundle.load("assets/Pyidaungsu-2.5.3_Regular.ttf");
-      final ttf = pw.Font.ttf(myanmarFont);
-
-      pdf.addPage(
-        pw.Page(
-          pageFormat: PdfPageFormat.roll80,
-          build: (pw.Context context) {
-            return pw.Column(
-              crossAxisAlignment: pw.CrossAxisAlignment.start,
-              children: [
-                pw.Center(
-                    child: pw.Text("===== Item List =====",
-                        style: pw.TextStyle(font: ttf))),
-                pw.SizedBox(height: 10),
-                ...items
-                    .map((item) => pw.Column(
-                          crossAxisAlignment: pw.CrossAxisAlignment.start,
-                          children: [
-                            pw.Text("Number: ${item['number']}",
-                                style: pw.TextStyle(font: ttf)),
-                            pw.Text("Name: ${item['name']}",
-                                style: pw.TextStyle(font: ttf)),
-                            pw.Text("Price: ${item['price']}",
-                                style: pw.TextStyle(font: ttf)),
-                            pw.Text("Quantity: ${item['quantity']}",
-                                style: pw.TextStyle(font: ttf)),
-                            pw.Text("Amount: ${item['amount']}",
-                                style: pw.TextStyle(font: ttf)),
-                            pw.Text("------------------------",
-                                style: pw.TextStyle(font: ttf)),
-                          ],
-                        ))
-                    .toList(),
-              ],
-            );
-          },
-        ),
-      );
-
-      final pdfBytes = await pdf.save();
-
-      // Save PDF to temporary file
-      final output = await Printing.layoutPdf(
-        onLayout: (PdfPageFormat format) async => await pdf.save(),
-      );
-
-      // Print the PDF
-      final bool result =
-          await PrintBluetoothThermal.writeBytes(output as List<int>);
-
-      if (result) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Printing completed')),
-        );
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to print')),
-        );
-      }
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error printing: $e')),
-      );
-    }
   }
 
   Future<void> saveAndSharePdf() async {
@@ -306,8 +226,8 @@ class _CreateScreenState extends State<CreateScreen> {
       ),
     );
 
-    final file = await pdf.save();
-    await Printing.sharePdf(bytes: file, filename: 'item_list.pdf');
+    //final file = await pdf.save();
+    //await Printing.sharePdf(bytes: file, filename: 'item_list.pdf');
   }
 
   @override
@@ -324,160 +244,189 @@ class _CreateScreenState extends State<CreateScreen> {
             ),
         ],
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          children: [
-            TextField(
-              controller: numberController,
-              decoration: InputDecoration(labelText: 'Number'),
-              keyboardType: TextInputType.number,
-            ),
-            TextField(
-              controller: nameController,
-              decoration: InputDecoration(labelText: 'Name'),
-            ),
-            TextField(
-              controller: priceController,
-              decoration: InputDecoration(labelText: 'Price'),
-              keyboardType: TextInputType.number,
-            ),
-            TextField(
-              controller: quantityController,
-              decoration: InputDecoration(labelText: 'Quantity'),
-              keyboardType: TextInputType.number,
-            ),
-            TextField(
-              controller: amountController,
-              decoration: InputDecoration(labelText: 'Amount'),
-              keyboardType: TextInputType.number,
-            ),
-            SizedBox(height: 20),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                ElevatedButton(
-                  onPressed: addItem,
-                  child: Text('Add Item'),
+      body: SingleChildScrollView(
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                margin: const EdgeInsets.only(bottom: 8),
+                decoration: BoxDecoration(
+                  color: Colors.yellow.withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(8),
                 ),
-                ElevatedButton(
-                  onPressed: saveAndSharePdf,
-                  child: Text('Save PDF'),
+                child: const Text(
+                  'Bluetooth printing only supports very short receipts (1-2 items). For longer receipts, print in batches or use USB/WiFi.',
+                  style: TextStyle(
+                      color: Colors.orange, fontWeight: FontWeight.bold),
                 ),
-                ElevatedButton(
-                  onPressed: _connected ? printTicket : null,
-                  child: Text('Print Ticket'),
-                ),
-              ],
-            ),
-            SizedBox(height: 20),
-            _connected
-                ? Container(
-                    padding: EdgeInsets.all(8),
-                    color: Colors.green.withOpacity(0.1),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.check_circle, color: Colors.green),
-                        SizedBox(width: 8),
-                        Text(
-                          'Connected to $_connectedDeviceName',
-                          style: TextStyle(color: Colors.green),
-                        ),
-                      ],
+              ),
+              TextField(
+                controller: numberController,
+                decoration: const InputDecoration(labelText: 'Number'),
+                keyboardType: TextInputType.number,
+              ),
+              TextField(
+                controller: nameController,
+                decoration: const InputDecoration(labelText: 'Name'),
+                keyboardType: TextInputType.text,
+              ),
+              TextField(
+                controller: priceController,
+                decoration: const InputDecoration(labelText: 'Price'),
+                keyboardType: TextInputType.number,
+              ),
+              TextField(
+                controller: quantityController,
+                decoration: const InputDecoration(labelText: 'Quantity'),
+                keyboardType: TextInputType.number,
+              ),
+              TextField(
+                controller: amountController,
+                decoration: const InputDecoration(labelText: 'Amount'),
+                keyboardType: TextInputType.number,
+              ),
+              const SizedBox(height: 20),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: addItem,
+                      child: const Text('Add Item'),
                     ),
-                  )
-                : Column(
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  ),
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4.0),
+                      child: ElevatedButton(
+                        onPressed: saveAndSharePdf,
+                        child: const Text('Save PDF'),
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4.0),
+                      child: ElevatedButton(
+                        onPressed: _connected ? printTicket : null,
+                        child: const Text('Print Ticket'),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+              _connected
+                  ? Container(
+                      padding: const EdgeInsets.all(8),
+                      color: Colors.green.withOpacity(0.1),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
                         children: [
+                          const Icon(Icons.check_circle, color: Colors.green),
+                          const SizedBox(width: 8),
                           Text(
-                            'Paired Devices',
-                            style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          ElevatedButton.icon(
-                            onPressed: getBondedDevices,
-                            icon: Icon(Icons.refresh),
-                            label: Text('Refresh'),
+                            'Connected to $_connectedDeviceName',
+                            style: const TextStyle(color: Colors.green),
                           ),
                         ],
                       ),
-                      SizedBox(height: 10),
-                      _devices.isEmpty
-                          ? Container(
-                              height: 100,
-                              alignment: Alignment.center,
-                              decoration: BoxDecoration(
-                                border: Border.all(color: Colors.grey[300]!),
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Icon(
-                                    Icons.bluetooth_disabled,
-                                    size: 32,
-                                    color: Colors.grey,
-                                  ),
-                                  SizedBox(height: 8),
-                                  Text(
-                                    'No paired devices found',
-                                    style: TextStyle(color: Colors.grey[600]),
-                                  ),
-                                ],
-                              ),
-                            )
-                          : Container(
-                              height: 150,
-                              decoration: BoxDecoration(
-                                border: Border.all(color: Colors.grey[300]!),
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              child: ListView.builder(
-                                itemCount: _devices.length,
-                                itemBuilder: (context, index) {
-                                  final device = _devices[index];
-                                  return Card(
-                                    margin: EdgeInsets.symmetric(
-                                        horizontal: 8, vertical: 4),
-                                    child: ListTile(
-                                      leading: Container(
-                                        padding: EdgeInsets.all(8),
-                                        decoration: BoxDecoration(
-                                          color: Colors.blue.withOpacity(0.1),
-                                          shape: BoxShape.circle,
-                                        ),
-                                        child: Icon(Icons.print,
-                                            color: Colors.blue),
-                                      ),
-                                      title: Text(
-                                        device.name ?? 'Unknown Device',
-                                        style: TextStyle(
-                                            fontWeight: FontWeight.bold),
-                                      ),
-                                      subtitle: Text(device.macAdress),
-                                      trailing: ElevatedButton(
-                                        onPressed: () =>
-                                            connectToDevice(device),
-                                        child: Text('Connect'),
-                                        style: ElevatedButton.styleFrom(
-                                          backgroundColor: Colors.blue,
-                                          foregroundColor: Colors.white,
-                                        ),
-                                      ),
-                                    ),
-                                  );
-                                },
+                    )
+                  : Column(
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text(
+                              'Paired Devices',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
                               ),
                             ),
-                    ],
-                  ),
-            Expanded(
-              child: ListView.builder(
+                            ElevatedButton.icon(
+                              onPressed: startScan,
+                              icon: const Icon(Icons.refresh),
+                              label: const Text('Refresh'),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 10),
+                        printers.isEmpty
+                            ? Container(
+                                height: 100,
+                                alignment: Alignment.center,
+                                decoration: BoxDecoration(
+                                  border: Border.all(color: Colors.grey[300]!),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    const Icon(
+                                      Icons.bluetooth_disabled,
+                                      size: 32,
+                                      color: Colors.grey,
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Text(
+                                      'No paired devices found',
+                                      style: TextStyle(color: Colors.grey[600]),
+                                    ),
+                                  ],
+                                ),
+                              )
+                            : Container(
+                                height: 150,
+                                decoration: BoxDecoration(
+                                  border: Border.all(color: Colors.grey[300]!),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: ListView.builder(
+                                  itemCount: printers.length,
+                                  itemBuilder: (context, index) {
+                                    final printer = printers[index];
+                                    return Card(
+                                      margin: const EdgeInsets.symmetric(
+                                          horizontal: 8, vertical: 4),
+                                      child: ListTile(
+                                        leading: Container(
+                                          padding: const EdgeInsets.all(8),
+                                          decoration: BoxDecoration(
+                                            color: Colors.blue.withOpacity(0.1),
+                                            shape: BoxShape.circle,
+                                          ),
+                                          child: const Icon(Icons.print,
+                                              color: Colors.blue),
+                                        ),
+                                        title: Text(printer.name ?? ''),
+                                        subtitle: Text(
+                                            'Type: ${printer.connectionTypeString}'),
+                                        trailing: ElevatedButton(
+                                          onPressed: () =>
+                                              connectToPrinter(printer),
+                                          style: ElevatedButton.styleFrom(
+                                            backgroundColor: Colors.blue,
+                                            foregroundColor: Colors.white,
+                                          ),
+                                          child: Text(
+                                              printer.isConnected == true
+                                                  ? 'Disconnect'
+                                                  : 'Connect'),
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                ),
+                              ),
+                      ],
+                    ),
+              ListView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
                 itemCount: items.length,
                 itemBuilder: (context, index) {
                   final item = items[index];
@@ -489,8 +438,8 @@ class _CreateScreenState extends State<CreateScreen> {
                   );
                 },
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
