@@ -135,52 +135,25 @@ class _CreateScreenState extends State<CreateScreen> {
           .map((item) =>
               'No: ${item['number']} | Name: ${item['name']} | Price: ${item['price']} | Qty: ${item['quantity']} | Amt: ${item['amount']}')
           .join('\n');
-      final bytes = utf8.encode(receiptText);
       print('[DEBUG] Receipt text length: ${receiptText.length}');
-      print('[DEBUG] Receipt bytes length: ${bytes.length}');
-      if (bytes.length > 200) {
-        print(
-            '[ERROR] Receipt too long for Bluetooth print: ${bytes.length} bytes');
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-              content: Text(
-                  'Receipt too long for Bluetooth print. Please print fewer items.')),
-        );
-        return;
-      }
-      print(
-          '[DEBUG] Sending printWidget to printer: ${_connectedPrinter?.name}');
-      try {
-        await _flutterThermalPrinterPlugin.printWidget(
-          context,
-          printer: _connectedPrinter!,
-          printOnBle: true,
-          widget: _buildReceiptWidget(receiptText),
-        );
-        print('[DEBUG] Printing completed');
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Printing completed')),
-        );
-      } catch (e) {
-        print('[ERROR] PrintWidget error: $e');
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error printing: $e')),
-        );
-      }
+      // USB printing: send full receipt as a single widget
+      await _flutterThermalPrinterPlugin.printWidget(
+        context,
+        printer: _connectedPrinter!,
+        printOnBle: false, // USB printing only
+        widget: Text(receiptText, textAlign: TextAlign.left),
+      );
+
+      print('[DEBUG] Printing completed');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Printing completed')),
+      );
     } catch (e) {
       print('[ERROR] printTicket outer error: $e');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Error printing: $e')),
       );
     }
-  }
-
-  Widget _buildReceiptWidget(String receiptText) {
-    // Use a single Text widget for minimal Bluetooth data
-    return Text(
-      receiptText,
-      style: const TextStyle(fontSize: 14, fontFamily: 'monospace'),
-    );
   }
 
   void addItem() {
